@@ -1,0 +1,29 @@
+{
+	"name": "Bus",
+	"title": "Bus",
+	"description": "A message passing system with all kinds of flexibility. Because its really just a tree data structure with pub/sub methods",
+	"version": "0.1.0",
+	"homepage": "https://github.com/jkroso/Bus",
+	"author": {
+		"name": "Jakeb Rosoman",
+		"email": "jkroso@gmail.com"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git://github.com/jkroso/Bus.git"
+	},
+	"licenses": [
+		{
+			"type": "MIT",
+			"url": "https://github.com/jkroso/Bus/master/LICENSE-MIT"
+		}
+	],
+	"dependencies": {},
+	"devDependencies": {
+		"bigfile": ""
+	},
+	"scripts": {
+		"build": ""
+	},
+	"keywords": []
+}
