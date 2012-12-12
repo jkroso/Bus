@@ -5,3 +5,4 @@ docs
 *sublime-workspace
 ignore.conf
 node_modules
+built.js

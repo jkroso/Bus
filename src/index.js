@@ -2,31 +2,11 @@ var Subscription = require('./Subscription')
 
 exports = module.exports = Bus
 
-function Bus (listeners) {
-    // Using discriptor to prevent non-subTopic properties from being enumerable
-    Object.defineProperty(this, '_listeners', {
-        value : listeners && Object.prototype.toString.call(listeners) === '[object Array]'
-            ? listeners 
-            : [],
-        writable : true
-    })
+function Bus () {
+    this._subs = []
 }
 
 var proto = Bus.prototype
-
-exports.mixin = function (target) {
-    Bus.call(target)
-    Object.keys(proto).forEach(function (key) {
-        if ( !target.hasOwnProperty(key) ) {
-            Object.defineProperty(target, key, { 
-                value: proto[key], 
-                writable:true,
-                configurable:true 
-            })
-        }
-    })
-    return target
-}
 
 /**
  * Iterate over a list of listeners invoking each one
@@ -40,34 +20,15 @@ function invokeList (topics, data) {
     while ( len-- ) {
         listeners = topics[len]
         i = listeners.length
-        if ( i > 0 ) {
-            do {
-                // Returning false from a handler will prevent any further subscriptions from being notified
-                if ( listeners[--i].trigger(data) === false ) {
-                    return false
-                }
-            } while ( i )
+        while (i--) {
+            if (listeners[i].trigger(data) === false) return false
         }
     }
     return true
 }
 
-function insertListener (node, subscriptionData) {
-    var listeners = node._listeners.slice(),
-        priority = subscriptionData.priority,
-        added = false
-    
-    for ( var i = 0, len = listeners.length; i < len; i++ ) {
-        if ( listeners[i].priority >= priority ) {
-            listeners.splice(i, 0, subscriptionData)
-            added = true
-            break
-        }
-    }
-    if ( !added )
-        listeners.push(subscriptionData)
-    
-    node._listeners = listeners
+function insertListener (node, sub) {
+    node._subs = [sub].concat(node._subs)
 }
 
 function removeListener (node, callback) {
@@ -94,7 +55,7 @@ function removeListener (node, callback) {
                 return false
             }
     }
-    node._listeners = node._listeners.filter(check)
+    node._subs = node._subs.filter(check)
 }
 
 // Recursive collect with the ability to fork and combine
@@ -104,7 +65,7 @@ function branchingCollect (node, directive) {
         len = directive.length,
         direction,
         key,
-        result = [node._listeners]
+        result = [node._subs]
     while ( i < len ) {
         direction = directive[i++]
         key = direction[0]
@@ -118,178 +79,100 @@ function branchingCollect (node, directive) {
 // Takes an list of directions to follow and collects all listeners along the way
 exports.collect = collect
 function collect (node, directions) {
-    var result = [node._listeners],
+    var result = [node._subs],
         len = directions.length,
         i = 0
     while ( i < len ) {
         node = node[directions[i++]]
         if ( node )
-            result.push(node._listeners)
+            result.push(node._subs)
         else
             break
     }
     return result
 }
 
-// Retieves a a sub-topic from the descending tree
+var reserved = ['on', 'off', 'get', 'emit', '_subs'].reduce(function (o, w) {
+    return o[w] = true, o
+}, Object.create(null))
+
 proto.get = function (directions, useforce) {
-    if ( ! directions )
-        return this
+    if (!directions) return this
     directions = directions.split('.')
-    var topic = this,
-        edge,
-        len = directions.length,
-        i = 0
+    var topic = this, edge, i = 0
     
-    if ( len ) {
-        do {
-            edge = directions[i++]
-            if ( topic[edge] instanceof Bus )
-                topic = topic[edge]
-            else if ( topic[edge] )
-                throw 'namespace clash: '+edge
-            else if ( useforce )
-                topic = topic[edge] = new Bus
-            else
-                break
-        } while ( i < len )
+    while (edge = directions[i++]) {
+        if (reserved[edge]) throw new Error('Reserved word: '+edge)
+        if (topic[edge]) topic = topic[edge]
+        else if (useforce) topic = topic[edge] = new Bus
+        else break
     }
     return topic
 }
 
 /**
- * If any callback returns false we immediately exit otherwise we simply return true to indicate that all callbacks were fired without interference
+ * If any callback returns false we immediately exit otherwise we simply 
+ * return true to indicate that all callbacks were fired without interference
  * @param  {String} topic   the event type
  * @param  {Any}    data    any data you want passed to the callbacks
  * @return {Boolean}
  */
-proto.publish = function (topic, data) {
+proto.emit = function (topic, data) {
     if ( typeof topic === 'string' ) {
         topic = collect(this, topic.split('.'))
     } else {
         data = topic
-        topic = [this._listeners]
+        topic = [this._subs]
     }
     return invokeList(topic, data)
 }
 
-//  _Method_ __on__
-//  
-//  +   _optional_ __string__ `topics` a ' ' separate list of topics In the format `lvl1.lvl2.lvl3.etc`
-//  +   _optional_ __object__ `context`
-//  +   __function__ `callback` the function to handle events. Should take one argument, `data`
-//  +   _optional_ __number__ `priority` 1 will trigger before 2 etc  
-//  
-// returns `listenerObject`
-proto.on = function (topics, context, callback, priority) {
-    switch ( arguments.length ) {  
-        case 3:
-            if (typeof callback === 'number') {
-                priority = callback
-                callback = context
-                context = window
-            } else
-                priority = 0
-            break
-        case 2:
-            callback = context
-            priority = 0
-            if ( typeof topics === 'string' ) {
-                context = window
-            } else {
-                context = topics
-                topics = ''
-            }
-            break
-        case 1:
-            callback = topics
-            topics = ''
-            context = window
-            priority = 0
-            break
-        case 0:
-            throw 'Insufficient arguments'
+proto.on = function (topics, callback, context) {
+    if (typeof topics !== 'string') {
+        callback = topics
+        context = callback
+        topics = ''
     }
+    if (!(callback instanceof Subscription))
+        callback = new Subscription(callback, context)
 
-    var listenerData = new Subscription(context, callback, priority)
-
-    // Multiple subscriptions can be set at the same time, in fact it is recommended as they end up sharing memory this way. No need to throw error for incorrect topic since accessing `split` on a non-string will throw an error anyway
-    topics.split(/\s+/).forEach(function (directions) {
-        insertListener(this.get(directions, true), listenerData)
-    },this)
-    return listenerData
-}
-
-// Same api as on except as soon as one topic is triggered the listener will be removed from __all__ topics it was subscribed to in the `once` call
-proto.once = function (topics, context, callback, priority) {
-    switch ( arguments.length ) {  
-        case 3:
-            if (typeof callback === 'number') {
-                priority = callback
-                callback = context
-                context = window
-            } else
-                priority = 0
-            break
-        case 2:
-            callback = context
-            context = window
-            priority = 0
-            break
-        case 1:
-            callback = topics
-            topics = ''
-            context = window
-            priority = 0
-            break
-        case 0:
-            throw 'Insufficient arguments'
-    }
-    var listenerData = new Subscription(context, callback, priority)
-    listenerData._topics = []
-    listenerData.trigger = function (data) {
-        this._topics.forEach(function (topic) {
-            removeListener(topic, this)
-        }, this)
-        return this.callback.call(this.context, data)
-    }
-    topics.split(/\s+/).forEach(function (directions) {
-        var topicObject = this.get(directions, true)
-        listenerData._topics.push(topicObject)
-        insertListener(topicObject, listenerData)
+    topics.split(/\s*\|\|\s*/).forEach(function (directions) {
+        directions = this.get(directions, true)
+        callback.register(directions)
+        insertListener(directions, callback)
     }, this)
 
-    return listenerData
+    return callback
 }
 
-//  _Method_ __off__
-//  
-//  +   __String__ `topic` the event type  
-//  +   _optional_ __function|subscriptionRef|string__ `callback`  
-//    + If you do not pass a callback then all subscriptions will be removed from that topic
-//    + If you pass a string then all subscriptions with a callback name matching that string will be remove
-//    + If you pass a function then all subscriptions with that function will be removed
 proto.off = function (topics, callback) {
-    if (typeof topics !== 'string') {
-        if ( !callback )
-            return removeListener(this, topics) // `topics` in this case being the `callback`
-        else 
-            throw 'Bad topic argument'
+    if (typeof topics === 'string') {
+        if (callback) {
+            topics.split(/\s*\|\|\s*/).forEach(function (topic) {
+                removeListener(this.get(topic), callback)
+            }, this)
+        }
+        else {
+            topics.split(/\s*\|\|\s*/).forEach(function (topic) {
+                topic = topic.split('.')
+                callback = topic[topic.length - 1]
+                topic.pop()
+                topic = this.get(topic.join('.'))
+                if (topic) delete topic[callback]
+            }, this)
+        }
     }
-    if ( arguments.length ) {
-        topics.split(/\s+/).forEach(function (topic) {
-            topic = this.get(topic, false)
-            if ( topic )
-                removeListener(topic, callback)
-        }, this)
-    // Clear everything
-    } else {
-        Object.keys(this).forEach(function (key) {
-            // Check that it isn't some special property
-            if ( this[key] instanceof Bus ) {
-                delete this[key]
-            }
-        }, this)
-        this._listeners = []
+    else {
+        if (topics) {
+        // `topics` in this case being the `callback`
+            removeListener(this, topics)
+        }
+        else {
+        // Clean the slate
+            Object.keys(this).forEach(function (key) {
+                if (!reserved[key]) delete this[key]
+            }, this)
+            this._subs = []
+        }
     }
 }
