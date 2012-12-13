@@ -1,151 +1,34 @@
-# Observer
+# Bus
 
-Defines a constructor for subscription objects and topic objects, and returns a topic instance. Any topics you subscribe to on this instance will themselves be topic instances. Thereby creating a nice tree structure for your events. You could however use these topic objects to build all sorts of interesting event networks, even circular ones.
+A robust event framework. At least that is its goal. More specifically I intend to create an event system which provides simple and performant broad phase filtering (probably covering 80% of use cases) while providing a framework for more powerful filtering systems to operate within. 
+
+## About event systems
+
+The problem event systems are designed to solve is that of responding to change in state. For example when a user logs in we might want to load the app into the sate it was in when they last logged out. An event system provides a place for you to register you interest in changes in state. You want to execute the `loadLastState` function whenever a user logs in so you pass that function along with you registration. In doing so you are telling the event system that when this happens do that.
+What event systems do then is house a bunch of subscriptions to particular types of changes in state. Then when an event occurs it looks for subscriptions whose conditions it can satisfy and calls their actions. Under the hood this is always going to be a process of elimination (a.k.a filtering). This is not a complicated task though an event system must be able to do it efficiently in order to be useful; since certain types of state can change very regularly. Take a clock or a users mouse for example.
+A common way to implement an event system is to enforce the rule that all events have a well defined type. E.g. The event for a user logging in might get the type "login" though this is up to the programmer to decide. This allows for a very efficient implementation since filtering can be acheived by storing all subscriptions in a hash map. This design has some limitations though since what happens if you want to perform some action whenever any event occurs? You would have to subscribe to all possible types, which is impractical. Also what happens if want to subscribe to the "login" event but only the user is a customer. These are actually both very common cases.  
+I will use [Backbone](http://backbonejs.org) to demonstrate common solutions to the problems I just mentioned. The first I will call the problem of types being too specific. Backbone deals with it by reserving a special event type for unfiltered events. It is called "all". The event system will do its thing then publish an "all" event as if that had been the original type of the event. The primary use case is for managing backbones collections. Whenever a model is added to a collection the collection will subscribe to the models "all" event and republish the events from the model as collection events. Remember events are used to represent changes in state. A change in the state of something which is a part of something else implies that the "something else" has also changed.  
+The second problem is kind of the flip side of the first. It is that of not being specific enough. Backbone deals with this by introducing subtypes. A subtyped event might look like this "login:customer" with the semi-colon seperating the type from the sub-type. The primary use case for sub-types in backbone is to allow users to subscribe to changes on a certain attribute of a model. So lets say a you had a user model. The users login might be represented by the event "changed:login". In this case subscriptions to "changed" will still be fired since they still match. By providing sub-topics Backbone is reducing the number conditionals required in their users subscribed functions, while maintaining the efficient hash lookup filtering. This isn't really enough though since one sub-topic may still not be specific enough. For example how would the collection the user model belongs to represent the state change? perhaps it would like to publish it as "0:changed:login", but I'm not sure. Choosing topics is a difficult task since the its hard to know what will work best for the event consumer. 
+
+## How is Bus better?
+
+Bus uses a recursive graph structure to store its subscriptions. This means their are inherintly no limits on the number of sub topics you might choose for an event. You might not even choose to give an event a topic. Also unlike most other event systems which hide their subscriptions from users Bus leaves them exposed. So if you were to write this code `bus.on('event')` you could expect to find an event property on the `bus` object. Furthermore as I mentioned earlier Bus employees a recursive structure, so the object stored on `bus.event` is another instance of `Bus`. This has two implications. First the bad. It means property conflicts are not protected against. You can solve this problem easily with a proxy though. The upside is you trigger the sub-topic directly without firing and event on the main topic. That would look like this `bus.event.emit({data: 'stuff'})` as apposed to `bus.emit('event', {data: 'stuff'})`. A good explanation of this use case can be found [here](https://github.com/millermedeiros/js-signals/wiki/Comparison-between-different-Observer-Pattern-implementations)  
+
+## Whats it missing?
+
+* API documentaion. lol
+* Doesn't yet manage its internal state perfectly. Some bus instances may sit around even after they have had their listeners removed. Making the .off() procedure fully recursive would be my first attempt at solving it though it would come at a performance cost. Come to think of it though the fact that I am removing any nodes in the bus graph might be a bad idea anyway. Since in cases where the user is holding a direct reference to a sub-topic it may become disconnected from the main graph unbeknownst to the user. This is something I would like to allow users to do. Perhaps it should be a rule then that once a node connected to the graph it can only be removed explicitly by the user.
 
 ## Getting Started
-Download the [production version][min] or the [development version][max].
+In the browser you can download the [production version][min] or the [development version][max].
 
-[min]: https://raw.github.com/jkroso/Observer/master/dist/Observer.min.js
-[max]: https://raw.github.com/jkroso/Observer/master/dist/Observer.js
+[min]: https://raw.github.com/jkroso/Bus/master/dist/Bus.min.js
+[max]: https://raw.github.com/jkroso/Bus/master/dist/Bus.js
 
-## Examples
-Observer is defined as an AMD module which returns an instance. Not the constructor. This instance can be refereed to as the global instance.
-
-```javascript
-require(['Observer'], function (observer) {
-	observer instanceof observer.constructor // true
-})
-```
-
-To subscribe to events on the global instance (or any instance) use the `on` method
-
-```javascript
-observer.on(function (data) {
-	console.log('An event fired on the global instance and was passed ', data)
-})
-```
-
-To publish and event us the `publish` method 
-
-```javascript
-observer.publish('some arbitrary data') // true
-```
-
-The publish method return true in this case because none of the subscriptions returned `false`. Values returned from subscriptions which do not strictly === `false` are ignored. However, a value of `false` will case further subscriptions to be skipped. The returned boolean from the `publish` function is just their for convenience in case you need to check for cancellations.
-
-If you want to be more specific about the type of event you are publishing you can pass as the first argument to `publish` an event type. 
-
-```javascript
-observer.publish('subtopic1', 'some arbitrary data') // true
-```
-
-In this case the effect will be exactly the same as the last event we published. Since the first subscription did not specify a topic it will be triggered on all topics. More specific topics though get priority over less specific ones. Adding a subscription to a specific topic is done as you would expect.
-
-```javascript
-observer.on('subtopic1', function (data) {
-	console.log('subtopic1 received ', data)
-})
-```
-Now if we were to publish the same 'subtopic1' event we fired before we would see the following in our console:
-	
-	'subtopic1 received some arbitrary data'
-	'An event fired on the global instance and was passed some arbitrary data'
-
-To demonstrate the what would happen if the 'subtopic1' subscription was to stopPropagation lets change the 'subtopic1' subscription to :
-
-```javascript
-observer.on('subtopic1', function (data) {
-	console.log('subtopic1 received ', data)
-	return false
-})
-```
-This time if we were to publish the same event again we would only see the following in our console:
-
-	'subtopic1 received some arbitrary data'
-
-Furthermore false would be the returned value of `publish`.
-
-If our desire is to only publish to the `subtopic1` subscription though we have another option. All instances of `Observer` have a `get` method. This method takes a topic as an argument and return that topic. Which if you have been paying attention you will realize is itself an instance `Observer`. Therefore, we publish an event using `subtopic1` as the base with the following code:
-
-```javascript
-observer.get('subtopic1').publish('some arbitrary data') // false
-```
-or
-```javascript
-observer.subtopic1.publish('some arbitrary data') // false
-```
-Again the publication process is canceled by the listener we subscribed so false is returned from the `publish` call. However, in this case it makes no actual difference since we called publish from `subtopic1` only listeners at or below it can be called. Note the second option will result in an error if `subtopic1` does not exist. This is desirable in some cases however.
-
-In order to create a new instance completely separate from the global instance, invoke the modules constructor
-
-```javascript
-var newInstance = new observer.constructor
-```
-
-If at a later stage you decide you want to connect this instance to the global network that is not a problem:
-
-```javascript
-observer.subtopic2 = newInstance
-```
-Now you can run `observer.publish('subtopic2')`. Conversely if you want to disconnect a subtopic from a network you  can do so simple by taking a reference to it an deleting it from its parent topic. e.g
-
-```javascript
-var existingInstance = observer.subtopic1;
-delete observer.subtopic1
-```
-
-Of course subtopic1 will still have its subscription we placed on it and can still be invoked though now we need to use `existingInstance.publish('some arbitrary data')`. Only difference is now we can't publish to `subtopic1` from the global instance.
-
-Finally I need to mention you are not limited to publishing to immediate subtopics. To reach down multiple levels simple seperate your topics with a '.'. 
-
-```javascript
-oberver.publish('subtopic2.a.b.c.d.e', 'some arbitrary data')
-```
-
-What this does is walk down the network pooling together all `_listener` objects from each topic as it goes. Then once it has either run out of directions or fails to find a topic you specified it will sequencially trigger all those which it found. `_listener` objects are fully immutable. Therefore, `publish`, is an atomic operation since all required references to subscriptions are gathered before triggering any of them you are free to add and remove subscriptions from within subscriptions without effecting the current event.
-
-## Documentation
-
-Subscribe to an event using `observer.on`.
-
-* [topics = null]: a ' ' separated list of direction strings. (separate directions with a '.') e.g. `topicA.topicB.topicC`
-* [context = window]: What `this` will be when the callback is invoked.
-* callback: Function to invoke when the message is published.
-* [priority = 0]: Priority relative to other subscriptions for the same message. The higher the value the higher the priority. Use of negative numbers is permitted.
-
-returns an instance of `Subscription`
-
-The following will subscribe a function to both `topicC` and `anotherB`
-
-```javascript
-observer.on('topicA.topicB.topicC anotherA.anotherB', function (data) {})
-```
-
-Subscribe to the next instance of an event using `observer.once`. If the subscription is bound to multiple topics it will be removed from all of them not just the one that was triggered.
-
-* [topics = null]: see `observer.on`
-* [context = window]: see `observer.on`
-* callback: see `observer.on`
-* [priority = 0]: see `observer.on`
-
-Publish an event using `observer.publish`
-
-* [topic = null]: Directions to the topic. (separate topics with a '.') e.g. `topicA.topicB.topicC`
-* [data = null]: A value to pass to each subscription
-
-returns a boolean indicating whether or not the publication was canceled by any subscriptions
-
-Unsubscribe using `observer.off`
-
-* [topics = null]: see `observer.on`
-* [callback = null]: can be a string referencing the name of the subscribed function, an instance of `Subscription`, a Function, or null to remove all subscriptions on the specified topic.
-
-returns `undefined`
+In node its available from npm as `loqe`
 
 ## Contributing
-In lieu of a formal style guide, take care to maintain the existing coding style. Add unit tests for any new or changed functionality. Lint and test your code using [grunt](https://github.com/cowboy/grunt).
-
-_Also, please don't edit files in the "dist" subdirectory as they are generated via grunt. You'll find source code in the "lib" subdirectory!_
+Please do! And feel free to discuss any ideas before you dive in. Just submit an issue.
 
 ## Release History
 _(Nothing yet)_

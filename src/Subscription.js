@@ -19,7 +19,7 @@ proto.register = function (node) {
 }
 
 proto.deregister = function (node) {
-    this.nodes = this.node.filter(function (n) {return n === node})
+    this.nodes = this.nodes.filter(function (n) {return n !== node})
     return this
 }
 
